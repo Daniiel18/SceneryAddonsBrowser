@@ -27,12 +27,14 @@ namespace SceneryAddonsBrowser.Services
             }
         }
 
-        public void InstallFromExtracted(string extractedPath, string communityPath)
+        public List<string> InstallFromExtracted(string extractedPath, string communityPath)
         {
             var packages = FindMsfsPackages(extractedPath);
 
             if (packages.Count == 0)
                 throw new Exception("No MSFS scenery packages found to install.");
+
+            var installedFolders = new List<string>();
 
             foreach (var packageDir in packages)
             {
@@ -45,9 +47,42 @@ namespace SceneryAddonsBrowser.Services
                     Directory.Delete(targetDir, true);
 
                 CopyDirectory(packageDir, targetDir);
+                installedFolders.Add(folderName);
             }
 
-            AppLogger.Log("All packages installed successfully.");
+            AppLogger.Log($"Installed {installedFolders.Count} package(s).");
+            return installedFolders;
+        }
+
+        public int Uninstall(IEnumerable<string> folderNames, string communityPath)
+        {
+            if (string.IsNullOrWhiteSpace(communityPath) || !Directory.Exists(communityPath))
+                return 0;
+
+            int removed = 0;
+
+            foreach (var folder in folderNames)
+            {
+                if (string.IsNullOrWhiteSpace(folder))
+                    continue;
+
+                var target = Path.Combine(communityPath, folder);
+                if (!Directory.Exists(target))
+                    continue;
+
+                try
+                {
+                    Directory.Delete(target, true);
+                    removed++;
+                    AppLogger.Log($"[UNINSTALL] Removed: {folder}");
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.LogError($"[UNINSTALL] Failed to remove {folder}", ex);
+                }
+            }
+
+            return removed;
         }
 
         public string ExtractPackage(string packagePath)

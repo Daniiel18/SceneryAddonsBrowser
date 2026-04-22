@@ -145,6 +145,7 @@
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
@@ -194,8 +195,25 @@
                     </Grid>
                 </Border>
 
-                <!-- RESULTS -->
+                <!-- ADDON UPDATES BANNER -->
                 <Border Grid.Row="1"
+                        x:Name="AddonUpdatesBanner"
+                        Background="#FF2B3A4A"
+                        BorderBrush="#FF4FC3F7"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="10,6"
+                        Margin="0,0,0,10"
+                        Cursor="Hand"
+                        Visibility="Collapsed"
+                        MouseLeftButtonUp="AddonUpdatesBanner_Click">
+                    <TextBlock x:Name="AddonUpdatesBannerText"
+                               Foreground="#FFDCEEFF"
+                               FontSize="12"/>
+                </Border>
+
+                <!-- RESULTS -->
+                <Border Grid.Row="2"
                         Background="#FF1E1E1E"
                         BorderBrush="#FF3A3A3A"
                         BorderThickness="1"
@@ -265,7 +283,7 @@
 
                 <!-- FOOTER -->
                 <!-- ================= STATUS + EXIT ================= -->
-                <Grid Grid.Row="2" Margin="0,12,0,0">
+                <Grid Grid.Row="3" Margin="0,12,0,0">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
@@ -368,7 +386,7 @@
         Margin="0,0,6,0"
         Click="SelectFolder_Click"/>
 
-                            <Button Content="History"
+                            <Button Content="Addons"
                     Width="70"
                     Height="26"
                     Margin="0,0,6,0"

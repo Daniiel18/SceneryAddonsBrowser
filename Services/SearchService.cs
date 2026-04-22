@@ -31,8 +31,9 @@ namespace SceneryAddonsBrowser.Services
             {
                 html = await _httpClient.GetStringAsync(searchUrl);
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.LogError($"Search request failed for ICAO: {icao}", ex);
                 return results;
             }
 
@@ -103,8 +104,53 @@ namespace SceneryAddonsBrowser.Services
             return results;
         }
 
+        // ================= REMOTE VERSION =================
+        /// <summary>
+        /// Returns a version token for a scenario page — typically the
+        /// article:modified_time meta value. Used for update detection.
+        /// </summary>
+        public async Task<string?> GetRemoteVersionAsync(string pageUrl)
+        {
+            if (string.IsNullOrWhiteSpace(pageUrl))
+                return null;
+
+            string html;
+            try
+            {
+                html = await _httpClient.GetStringAsync(pageUrl);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.LogError($"Failed to fetch scenario page for version: {pageUrl}", ex);
+                return null;
+            }
+
+            var modified = Regex.Match(
+                html,
+                @"<meta\s+property=[""']article:modified_time[""']\s+content=[""']([^""']+)[""']",
+                RegexOptions.IgnoreCase);
+
+            if (modified.Success)
+                return modified.Groups[1].Value.Trim();
+
+            var published = Regex.Match(
+                html,
+                @"<meta\s+property=[""']article:published_time[""']\s+content=[""']([^""']+)[""']",
+                RegexOptions.IgnoreCase);
+
+            if (published.Success)
+                return published.Groups[1].Value.Trim();
+
+            var time = Regex.Match(
+                html,
+                @"<time[^>]*datetime=[""']([^""']+)[""']",
+                RegexOptions.IgnoreCase);
+
+            return time.Success ? time.Groups[1].Value.Trim() : null;
+        }
+
         // ================= DOWNLOAD METHODS =================
-        private async Task<List<DownloadMethod>> GetDownloadMethodsAsync(string pageUrl)
+        public async Task<List<DownloadMethod>> GetDownloadMethodsAsync(string pageUrl)
         {
             var methods = new List<DownloadMethod>();
             if (string.IsNullOrWhiteSpace(pageUrl))
@@ -115,8 +161,9 @@ namespace SceneryAddonsBrowser.Services
             {
                 html = await _httpClient.GetStringAsync(pageUrl);
             }
-            catch
+            catch (Exception ex)
             {
+                AppLogger.LogError($"Failed to fetch download methods from: {pageUrl}", ex);
                 return methods;
             }
 

@@ -19,7 +19,10 @@ namespace SceneryAddonsBrowser.Logging
                 string line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}";
                 File.AppendAllText(LogFilePath, line + Environment.NewLine);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[AppLogger] Failed to write log: {ex.Message}");
+            }
         }
 
         public static void LogError(string message, Exception ex)

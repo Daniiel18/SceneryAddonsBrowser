@@ -4,14 +4,11 @@ using SceneryAddonsBrowser.Services;
 using SceneryAddonsBrowser.Views;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Net.Http;
-using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using Velopack;
-using System.Reflection;
 using Application = System.Windows.Application;
 using Brush = System.Windows.Media.Brush;
 using Cursors = System.Windows.Input.Cursors;
@@ -26,13 +23,11 @@ namespace SceneryAddonsBrowser
     {
         private readonly SearchService _searchService;
         private readonly DownloadService _downloadService;
-        private readonly DownloadStatus _downloadStatus = new();
         private readonly HistoryService _historyService = new();
         private readonly GsxProfileService _gsxService;
-        private PendingUpdate? _pendingUpdate;
         private readonly UpdateService _updateService = new();
         private readonly SettingsService _settingsService = new();
-        private UpdateInfo? _pendingUpdates;
+        private readonly AddonUpdateService _addonUpdateService;
 
 
 
@@ -58,9 +53,9 @@ namespace SceneryAddonsBrowser
             _searchService = new SearchService();
             _downloadService = new DownloadService();
             _gsxService = new GsxProfileService();
+            _addonUpdateService = new AddonUpdateService(_historyService, _searchService);
 
             _downloadService.StateChanged += OnDownloadStateChanged;
-
             _downloadService.QueueChanged += UpdateQueueUi;
 
             Loaded += MainWindow_Loaded;
@@ -89,6 +84,8 @@ namespace SceneryAddonsBrowser
         // ================= AUTOFOCUS =================
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            _ = Task.Run(RunAddonUpdateCheckAsync);
+
             var pending = PendingUpdateStore.PendingUpdate;
 
             // DEV MODE
@@ -340,26 +337,13 @@ namespace SceneryAddonsBrowser
 
             AppLogger.Log($"UI received {results.Count} scenarios.");
 
-            if (results != null && _gsxService != null)
-            {
-                foreach (var scenario in results)
-                {
-                    if (scenario == null)
-                        continue;
-
-                    _ = _gsxService.CheckGsxProfileAsync(scenario);
-                }
-            }
-
-            var gsxService = new GsxProfileService();
-
             foreach (var scenario in results)
             {
                 _ = _gsxService.CheckGsxProfileAsync(scenario);
             }
 
             ResultsListView.ItemsSource = results;
-            StatusTextBlock.Text = $"{results.Count} scenaries found.";
+            StatusTextBlock.Text = $"{results.Count} sceneries found.";
 
             AppLogger.Log($"[GSX] Triggering GSX lookup after search for ICAO: {icao}");
             _ = Task.Run(() => UpdateGsxStatusAsync(icao));
@@ -379,8 +363,6 @@ namespace SceneryAddonsBrowser
                 Owner = this
             };
 
-            var communityService = new CommunityFolderService();
-
             bool? result = dialog.ShowDialog();
             if (result == true && dialog.SelectedMethod != null)
             {
@@ -399,8 +381,9 @@ namespace SceneryAddonsBrowser
                     });
                     });
                 }
-                catch
+                catch (Exception ex)
                 {
+                    AppLogger.LogError("Download start failed", ex);
                 }
             }
         }
@@ -413,98 +396,54 @@ namespace SceneryAddonsBrowser
             _lastSearchedIcao = icao.ToUpperInvariant();
             _lastGsxCount = 0;
 
-            var url = $"https://flightsim.to/miscellaneous/gsx-pro?q={icao.ToLowerInvariant()}";
-
             AppLogger.Log($"[GSX] Starting GSX lookup for ICAO: {_lastSearchedIcao}");
-            AppLogger.Log($"[GSX] URL: {url}");
 
             try
             {
-
-                var handler = new HttpClientHandler
-                {
-                    AutomaticDecompression = System.Net.DecompressionMethods.GZip |
-                                             System.Net.DecompressionMethods.Deflate
-                };
-
-                var http = new HttpClient(handler);
-
-                http.DefaultRequestHeaders.TryAddWithoutValidation(
-                    "User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36");
-
-                http.DefaultRequestHeaders.TryAddWithoutValidation(
-                    "Accept",
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-
-                http.DefaultRequestHeaders.TryAddWithoutValidation(
-                    "Accept-Language",
-                    "en-US,en;q=0.9");
-
-                http.DefaultRequestHeaders.TryAddWithoutValidation(
-                    "Cache-Control",
-                    "no-cache");
-
-                AppLogger.Log("[GSX] Downloading GSX search page...");
-
-                var html = await http.GetStringAsync(url);
-
-                AppLogger.Log($"[GSX] HTML downloaded. Length = {html.Length}");
-
-                var gsxService = new GsxProfileService();
-
-                int count = await gsxService.GetProfileCountAsync(icao);
+                int count = await _gsxService.GetProfileCountAsync(icao);
 
                 _lastGsxCount = count;
 
                 AppLogger.Log($"[GSX] Profiles found: {count}");
 
                 Dispatcher.Invoke(() =>
-                 {
-                     if (count > 0)
-                     {
-                         GsxStatusTextBlock.Text =
-                         $"● GSX Profiles available ({count}) — View on flightsim.to";
+                {
+                    if (count > 0)
+                    {
+                        GsxStatusTextBlock.Text =
+                            $"● GSX Profiles available ({count}) — View on flightsim.to";
 
-                         GsxStatusTextBlock.Foreground =
-                             new BrushConverter().ConvertFrom("#FF4FC3F7") as Brush;
+                        GsxStatusTextBlock.Foreground =
+                            new BrushConverter().ConvertFrom("#FF4FC3F7") as Brush;
 
-                         GsxStatusTextBlock.Cursor = Cursors.Hand;
-                         GsxStatusTextBlock.Visibility = Visibility.Visible;
+                        GsxStatusTextBlock.Cursor = Cursors.Hand;
+                    }
+                    else
+                    {
+                        GsxStatusTextBlock.Text =
+                            "● No GSX profiles found for this airport";
 
-                     }
-                     else
-                     {
-                         GsxStatusTextBlock.Text =
-                         "● No GSX profiles found for this airport";
+                        GsxStatusTextBlock.Foreground =
+                            new BrushConverter().ConvertFrom("#FF777777") as Brush;
 
-                         GsxStatusTextBlock.Foreground =
-                             new BrushConverter().ConvertFrom("#FF777777") as Brush;
+                        GsxStatusTextBlock.Cursor = Cursors.Arrow;
+                    }
 
-                         GsxStatusTextBlock.Cursor = Cursors.Arrow;
-                         GsxStatusTextBlock.Visibility = Visibility.Visible;
+                    GsxStatusTextBlock.Visibility = Visibility.Visible;
+                });
 
-                     }
-                 });
-
-                GsxStatusTextBlock.Visibility = Visibility.Visible;
                 AppLogger.Log("[GSX] Status text updated successfully");
-            }
-            catch (HttpRequestException ex)
-            {
-                AppLogger.LogError("[GSX] HTTP error while fetching GSX profiles", ex);
-
-                GsxStatusTextBlock.Text =
-                    $"GSX Profiles: Unable to check profiles for {_lastSearchedIcao}";
-                GsxStatusTextBlock.Visibility = Visibility.Visible;
             }
             catch (Exception ex)
             {
                 AppLogger.LogError("[GSX] Unexpected error", ex);
 
-                GsxStatusTextBlock.Text =
-                    $"GSX Profiles: Error checking profiles for {_lastSearchedIcao}";
-                GsxStatusTextBlock.Visibility = Visibility.Visible;
+                Dispatcher.Invoke(() =>
+                {
+                    GsxStatusTextBlock.Text =
+                        $"GSX Profiles: Error checking profiles for {_lastSearchedIcao}";
+                    GsxStatusTextBlock.Visibility = Visibility.Visible;
+                });
             }
         }
 
@@ -549,12 +488,59 @@ namespace SceneryAddonsBrowser
 
         private void History_Click(object sender, RoutedEventArgs e)
         {
-            var dialog = new HistoryDialog
+            OpenAddonManager();
+        }
+
+        private void OpenAddonManager()
+        {
+            var dialog = new Views.AddonManagerDialog(_downloadService)
             {
                 Owner = this
             };
 
             dialog.ShowDialog();
+
+            // Banner may need to be hidden if the user acted on updates.
+            UpdateAddonBannerFromHistory();
+        }
+
+        private void AddonUpdatesBanner_Click(object sender, MouseButtonEventArgs e)
+        {
+            OpenAddonManager();
+        }
+
+        private async Task RunAddonUpdateCheckAsync()
+        {
+            try
+            {
+                var updates = await _addonUpdateService.CheckAllAsync();
+                Dispatcher.Invoke(() => ShowAddonUpdatesBanner(updates.Count));
+            }
+            catch (Exception ex)
+            {
+                AppLogger.LogError("[ADDON-UPDATE] Startup check failed", ex);
+            }
+        }
+
+        private void UpdateAddonBannerFromHistory()
+        {
+            int count = _historyService.Load().Count(i => i.HasUpdate);
+            ShowAddonUpdatesBanner(count);
+        }
+
+        private void ShowAddonUpdatesBanner(int count)
+        {
+            if (count <= 0)
+            {
+                AddonUpdatesBanner.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            AddonUpdatesBannerText.Text = count == 1
+                ? "1 addon update available — click to open the Addon Manager"
+                : $"{count} addon updates available — click to open the Addon Manager";
+
+            AddonUpdatesBanner.Visibility = Visibility.Visible;
         }
 
         public void ShowProgress(string text)
@@ -607,11 +593,12 @@ namespace SceneryAddonsBrowser
                         var session = _downloadService.GetActiveSession();
                         if (session != null)
                         {
+                            var parts = session.ScenarioId.Split(new[] { '_' }, 2);
                             _historyService.AddOrUpdate(new DownloadHistoryItem
                             {
-                                Icao = session.ScenarioId.Split('_')[0],
+                                Icao = parts.Length > 0 ? parts[0] : session.ScenarioId,
                                 ScenarioName = session.ScenarioId,
-                                Developer = session.ScenarioId.Split('_')[1],
+                                Developer = parts.Length > 1 ? parts[1].Replace('_', ' ') : "Unknown",
                                 Method = "Torrent",
                                 DownloadDate = DateTime.Now,
                                 PackagePath = null,

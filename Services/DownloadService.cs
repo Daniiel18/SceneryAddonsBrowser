@@ -1,4 +1,4 @@
-﻿using SceneryAddonsBrowser.Logging;
+using SceneryAddonsBrowser.Logging;
 using SceneryAddonsBrowser.Models;
 using System.Diagnostics;
 using System.IO;
@@ -12,6 +12,7 @@ namespace SceneryAddonsBrowser.Services
     {
         private readonly HttpClient _httpClient;
         private readonly HistoryService _historyService = new();
+        private readonly SearchService _searchService = new();
         private readonly TorrentService _torrentService = new();
         private readonly TorrentQueueService _torrentQueue;
         private readonly DownloadSessionService _sessionService = new();
@@ -27,9 +28,7 @@ namespace SceneryAddonsBrowser.Services
 
         private string? _lastMagnet;
 
-
         public event Action<DownloadState>? StateChanged;
-
         public event Action? QueueChanged;
 
         public DownloadService()
@@ -42,7 +41,6 @@ namespace SceneryAddonsBrowser.Services
 
             _torrentQueue = new TorrentQueueService(this);
             _torrentQueue.QueueChanged += () => QueueChanged?.Invoke();
-
         }
 
         private void SetState(DownloadState state)
@@ -80,9 +78,7 @@ namespace SceneryAddonsBrowser.Services
                 {
                     if (_currentDataDir != null && Directory.Exists(_currentDataDir))
                     {
-
-                     Directory.Delete(Path.GetDirectoryName(_currentDataDir)!, true);
-                    
+                        Directory.Delete(_currentDataDir, true);
                     }
                 }
                 catch (Exception ex)
@@ -98,7 +94,7 @@ namespace SceneryAddonsBrowser.Services
         }
 
         // ================= TORRENT =================
-        internal async Task DownloadTorrentInternalAsync(DownloadMethod method,Action<string, int>? progress)
+        internal async Task DownloadTorrentInternalAsync(DownloadMethod method, Action<string, int>? progress)
         {
             if (method.Scenario == null)
                 throw new InvalidOperationException("Scenario missing.");
@@ -117,7 +113,6 @@ namespace SceneryAddonsBrowser.Services
             {
                 string? magnet = null;
 
-                // 🔁 LOOP CONTROLADO PARA RESOLVER MAGNET
                 while (magnet == null)
                 {
                     SetState(DownloadState.ResolvingMagnet);
@@ -145,13 +140,19 @@ namespace SceneryAddonsBrowser.Services
                 _lastMagnet = magnet;
                 _currentDataDir = dataDir;
 
-                _sessionService.Save(new DownloadSession
+                var session = new DownloadSession
                 {
                     ScenarioId = scenarioId,
                     MagnetUri = magnet,
                     DataPath = dataDir,
-                    IsCompleted = false
-                });
+                    IsCompleted = false,
+                    SourcePageUrl = method.Scenario.SourcePageUrl,
+                    ScenarioName = method.Scenario.Name,
+                    Developer = method.Scenario.Developer,
+                    Icao = method.Scenario.Icao
+                };
+
+                _sessionService.Save(session);
 
                 SetState(DownloadState.Downloading);
 
@@ -178,13 +179,7 @@ namespace SceneryAddonsBrowser.Services
 
                 AppLogger.Log("[TORRENT] Torrent download completed.");
 
-                await ContinueInstallationAsync(new DownloadSession
-                {
-                    ScenarioId = scenarioId,
-                    MagnetUri = magnet,
-                    DataPath = dataDir,
-                    IsCompleted = false
-                });
+                await ContinueInstallationAsync(session);
             }
             catch (TaskCanceledException)
             {
@@ -217,7 +212,7 @@ namespace SceneryAddonsBrowser.Services
         }
 
         // ================= ENTRY POINT =================
-        public async Task StartDownloadAsync(DownloadMethod method,Action<string, int>? progressCallback = null)
+        public async Task StartDownloadAsync(DownloadMethod method, Action<string, int>? progressCallback = null)
         {
             AppLogger.Log("=== StartDownloadAsync ===");
 
@@ -232,10 +227,10 @@ namespace SceneryAddonsBrowser.Services
                 Method = method.Type.ToString(),
                 DownloadDate = DateTime.Now,
                 IsInstalled = false,
-                AutoInstallPending = method.Type == DownloadType.Torrent
+                AutoInstallPending = method.Type == DownloadType.Torrent,
+                SourcePageUrl = method.Scenario.SourcePageUrl
             });
 
-            // 🚀 TORRENT
             if (method.Type == DownloadType.Torrent)
             {
                 _torrentQueue.Enqueue(new TorrentJob(method, progressCallback));
@@ -243,7 +238,7 @@ namespace SceneryAddonsBrowser.Services
                 return;
             }
 
-            // 🌐 MIRROR
+            // MIRROR
             var scenarioTitle = BuildScenarioDisplayName(method);
 
             progressCallback?.Invoke(
@@ -256,6 +251,44 @@ namespace SceneryAddonsBrowser.Services
                 FileName = method.Url,
                 UseShellExecute = true
             });
+        }
+
+        /// <summary>
+        /// Re-scrapes the source page for an installed addon and relaunches
+        /// the torrent download to apply the latest version.
+        /// </summary>
+        public async Task<bool> StartUpdateAsync(
+            DownloadHistoryItem item,
+            Action<string, int>? progressCallback = null)
+        {
+            if (item == null || string.IsNullOrWhiteSpace(item.SourcePageUrl))
+            {
+                AppLogger.Log("[ADDON-UPDATE] Cannot update — missing source page URL.");
+                return false;
+            }
+
+            AppLogger.Log($"[ADDON-UPDATE] Starting update for {item.Icao} / {item.Developer}");
+
+            var methods = await _searchService.GetDownloadMethodsAsync(item.SourcePageUrl);
+            var torrent = methods.FirstOrDefault(m => m.Type == DownloadType.Torrent)
+                          ?? methods.FirstOrDefault();
+
+            if (torrent == null)
+            {
+                AppLogger.Log("[ADDON-UPDATE] No download methods found on source page.");
+                return false;
+            }
+
+            torrent.Scenario = new Scenario
+            {
+                Icao = item.Icao,
+                Name = item.ScenarioName,
+                Developer = item.Developer,
+                SourcePageUrl = item.SourcePageUrl
+            };
+
+            await StartDownloadAsync(torrent, progressCallback);
+            return true;
         }
 
         private static string BuildScenarioDisplayName(DownloadMethod method)
@@ -358,6 +391,11 @@ namespace SceneryAddonsBrowser.Services
                     f.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) ||
                     f.EndsWith(".rar", StringComparison.OrdinalIgnoreCase));
 
+            var (fallbackIcao, fallbackDeveloper) = SplitScenarioId(session.ScenarioId);
+            var icao = session.Icao ?? fallbackIcao;
+            var developer = session.Developer ?? fallbackDeveloper;
+            var scenarioName = session.ScenarioName ?? session.ScenarioId;
+
             if (finalPackage == null)
             {
                 AppLogger.Log("[INSTALL] Package not found. Installation skipped.");
@@ -379,18 +417,31 @@ namespace SceneryAddonsBrowser.Services
                 var extractedPath = installer.ExtractPackage(finalPackage);
 
                 AppLogger.Log("[INSTALL] Installing scenery...");
-                installer.InstallFromExtracted(extractedPath, communityPath);
+                var installedFolders = installer.InstallFromExtracted(extractedPath, communityPath);
 
+                string? version = null;
+                if (!string.IsNullOrWhiteSpace(session.SourcePageUrl))
+                {
+                    version = await _searchService.GetRemoteVersionAsync(session.SourcePageUrl);
+                    AppLogger.Log($"[INSTALL] Captured version token: {version ?? "(none)"}");
+                }
+
+                var now = DateTime.Now;
                 _historyService.AddOrUpdate(new DownloadHistoryItem
                 {
-                    Icao = session.ScenarioId.Split('_')[0],
-                    ScenarioName = session.ScenarioId,
-                    Developer = session.ScenarioId.Split('_')[1],
+                    Icao = icao,
+                    ScenarioName = scenarioName,
+                    Developer = developer,
                     Method = "Torrent",
-                    DownloadDate = DateTime.Now,
+                    DownloadDate = now,
                     PackagePath = null,
                     IsInstalled = true,
-                    AutoInstallPending = false
+                    AutoInstallPending = false,
+                    SourcePageUrl = session.SourcePageUrl,
+                    InstalledVersion = version,
+                    LatestVersion = version,
+                    LastUpdateCheckAt = now,
+                    InstalledPackageFolders = installedFolders
                 });
 
                 CleanupSceneriesRoot();
@@ -403,23 +454,25 @@ namespace SceneryAddonsBrowser.Services
             catch (Exception ex)
             {
                 AppLogger.LogError("[INSTALL] Installation failed", ex);
+
                 _historyService.AddOrUpdate(new DownloadHistoryItem
                 {
-                    Icao = session.ScenarioId.Split('_')[0],
-                    ScenarioName = session.ScenarioId,
-                    Developer = session.ScenarioId.Split('_')[1],
+                    Icao = icao,
+                    ScenarioName = scenarioName,
+                    Developer = developer,
                     Method = "Torrent",
                     DownloadDate = DateTime.Now,
                     PackagePath = session.DataPath,
                     IsInstalled = false,
-                    AutoInstallPending = true
+                    AutoInstallPending = true,
+                    SourcePageUrl = session.SourcePageUrl
                 });
 
                 SetState(DownloadState.Error);
 
                 MessageBox.Show(
                     "The scenery was downloaded but could not be installed.\n\n" +
-                    "You can retry installation from History.",
+                    "You can retry installation from the Addon Manager.",
                     "Installation failed",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning
@@ -430,6 +483,15 @@ namespace SceneryAddonsBrowser.Services
         public DownloadSession? GetActiveSession()
         {
             return _sessionService.Load();
+        }
+
+        private static (string Icao, string Developer) SplitScenarioId(string scenarioId)
+        {
+            var parts = scenarioId.Split(new[] { '_' }, 2);
+            return (
+                parts.Length > 0 ? parts[0] : scenarioId,
+                parts.Length > 1 ? parts[1].Replace('_', ' ') : "Unknown"
+            );
         }
     }
 }
